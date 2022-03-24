@@ -40,7 +40,7 @@ function handleImportStatements(
   for (const importStatement of importStatements) {
     const { strLit } = importStatement;
     if (offset < strLit.start) continue;
-    if (offset >= strLit.end) continue;
+    if (offset > strLit.end) continue;
     const importPath = evalStrLit(strLit);
     const i = file.imports.find((i) => i.importPath === importPath);
     if (!i?.filePath) return;
@@ -74,6 +74,12 @@ function handleTypeReferences(
     start: parser.offsetToColRow(start),
     end: parser.offsetToColRow(end),
   };
+}
+
+export function isTypeSpecifier(parseResult: ParseResult, colRow: ColRow) {
+  const offset = parseResult.parser.colRowToOffset(colRow);
+  const typeRef = getTypeReference(parseResult, offset);
+  return Boolean(typeRef);
 }
 
 export function getTypeInformation(
@@ -158,7 +164,7 @@ function getTypeReference(
     },
     visitType(_visitor, node) {
       if (offset < node.start) return;
-      if (offset >= node.end) return;
+      if (offset > node.end) return;
       result = { node, scope: `.${stack.join(".")}` };
     },
   };

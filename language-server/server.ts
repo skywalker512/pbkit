@@ -1,7 +1,6 @@
-import { getVendorDir } from "../cli/pb/config.ts";
-import { createLoader } from "../core/loader/deno-fs.ts";
 import gotoDefinition, {
   getTypeInformation,
+  isTypeSpecifier,
 } from "../core/schema/gotoDefinition.ts";
 import { build } from "../core/schema/builder.ts";
 import { createJsonRpcConnection, CreateJsonRpcLogConfig } from "./json-rpc.ts";
@@ -9,8 +8,10 @@ import { ColRow } from "../core/parser/recursive-descent-parser.ts";
 import { Location } from "../core/parser/location.ts";
 import { Schema } from "../core/schema/model.ts";
 import findAllReferences from "../core/schema/findAllReferences.ts";
-import expandEntryPaths from "../cli/pb/cmds/gen/expandEntryPaths.ts";
 import * as lsp from "./lsp.ts";
+import { createProjectManager } from "./project.ts";
+import { parse } from "../core/parser/proto.ts";
+import { fromFileUrl } from "../core/loader/deno-fs.ts";
 
 export interface RunConfig {
   reader: Deno.Reader;
@@ -22,7 +23,7 @@ export interface Server {
 }
 
 export function run(config: RunConfig): Server {
-  let projectPaths: string[] = []; // sorted string array in descending order
+  const projectManager = createProjectManager();
   const connection = createJsonRpcConnection({
     reader: config.reader,
     writer: config.writer,
@@ -36,20 +37,15 @@ export function run(config: RunConfig): Server {
     },
     requestHandlers: {
       ["initialize"](params: lsp.InitializeParams): lsp.InitializeResult {
-        if (params.workspaceFolders) {
-          // TODO: traverse workspaces and find project directories
-          projectPaths = params.workspaceFolders.map(({ uri }) => uri).sort()
-            .reverse();
+        for (const folder of params.workspaceFolders || []) {
+          projectManager.addProjectPath(folder.uri);
         }
         // Find .pollapo paths in workspace folders
         const result: lsp.InitializeResult = {
           capabilities: {
             // @TODO: Add support for incremental sync
             textDocumentSync: lsp.TextDocumentSyncKind.Full,
-            completionProvider: {
-              // @TODO: Add support for resolveProvider
-              resolveProvider: false,
-            },
+            completionProvider: undefined,
             referencesProvider: true,
             definitionProvider: true,
             hoverProvider: true,
@@ -95,11 +91,17 @@ export function run(config: RunConfig): Server {
         params: lsp.HoverParams,
       ): Promise<lsp.HoverResponse> {
         const { textDocument, position } = params;
+        const colRow = positionToColRow(position);
+        const parseResult = parse(
+          await Deno.readTextFile(fromFileUrl(textDocument.uri)),
+        );
+        // try parse textDocument only -> check if it is type specifier
+        if (!isTypeSpecifier(parseResult, colRow)) return null;
         const schema = await buildFreshSchema(textDocument.uri);
         const typeInformation = getTypeInformation(
           schema,
           textDocument.uri,
-          positionToColRow(position),
+          colRow,
         );
         if (!typeInformation) return null;
         return {
@@ -113,16 +115,8 @@ export function run(config: RunConfig): Server {
   });
   return { finish: connection.finish };
   async function buildFreshSchema(file: string): Promise<Schema> {
-    const projectPath = projectPaths.find((p) => file.startsWith(p));
-    const entryPaths = projectPath
-      ? [projectPath + "/.pollapo", projectPath]
-      : [];
-    const roots = [...entryPaths, getVendorDir()];
-    const loader = createLoader({ roots });
-    return await build({
-      loader,
-      files: [...await expandEntryPaths(entryPaths), file],
-    });
+    const buildConfig = await projectManager.createBuildConfig(file);
+    return await build(buildConfig);
   }
 }
 
