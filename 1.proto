@@ -1,0 +1,17 @@
+
+syntax = "proto3";
+
+// aa
+service MyService {
+    // bbb
+    rpc MyMethod (MyRequest) returns (MyResponse); // ccc
+}
+
+message MyRequest {
+    string path = 1;
+}
+
+message MyResponse {
+    int32 status = 1;
+}
+  
